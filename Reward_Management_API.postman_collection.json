@@ -1,0 +1,489 @@
+{
+	"info": {
+		"_postman_id": "reward-management-api-collection",
+		"name": "Reward Management API",
+		"description": "Complete API collection for Reward Management System with REST endpoints for crediting rewards, redeeming coins, and viewing transaction history.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "reward-management"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Service is healthy\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"    pm.expect(jsonData.data).to.eql(\"OK\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/health",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"health"
+					]
+				},
+				"description": "Health check endpoint to verify service availability"
+			},
+			"response": []
+		},
+		{
+			"name": "Credit Rewards",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Reward credited successfully\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"    pm.expect(jsonData.message).to.include(\"Successfully credited\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"numberOfCoins\": 100,\n  \"expirationMinutes\": 30\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/rewards",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"rewards"
+					]
+				},
+				"description": "Credit reward coins to a user's account with configurable expiration in minutes"
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current Balance",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Balance retrieved successfully\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"    pm.expect(jsonData.data).to.be.a('number');",
+							"    pm.expect(jsonData.data).to.be.at.least(0);",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"url": {
+					"raw": "{{baseUrl}}/balance",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"balance"
+					]
+				},
+				"description": "Get current coin balance for a user (lightweight endpoint)"
+			},
+			"response": []
+		},
+		{
+			"name": "View Coins & Transaction History",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"View result contains required fields\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"    pm.expect(jsonData.data).to.have.property('userId');",
+							"    pm.expect(jsonData.data).to.have.property('totalCoins');",
+							"    pm.expect(jsonData.data).to.have.property('transactions');",
+							"    pm.expect(jsonData.data.transactions).to.be.an('array');",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"url": {
+					"raw": "{{baseUrl}}/view/coins",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"view",
+						"coins"
+					]
+				},
+				"description": "Get comprehensive user information including balance and transaction history"
+			},
+			"response": []
+		},
+		{
+			"name": "Redeem Coins",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Coins redeemed successfully\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"    pm.expect(jsonData.message).to.include(\"Successfully redeemed\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"numberOfCoins\": 25\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/redeem",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"redeem"
+					]
+				},
+				"description": "Redeem coins from a user's account"
+			},
+			"response": []
+		},
+		{
+			"name": "Credit Large Reward",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Large reward credited successfully\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(true);",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"numberOfCoins\": 500,\n  \"expirationMinutes\": 90\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/rewards",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"rewards"
+					]
+				},
+				"description": "Credit a large reward amount for testing"
+			},
+			"response": []
+		},
+		{
+			"name": "Test Insufficient Balance Error",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 400 (Bad Request)\", function () {",
+							"    pm.response.to.have.status(400);",
+							"});",
+							"",
+							"pm.test(\"Insufficient balance error returned\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(false);",
+							"    pm.expect(jsonData.errorCode).to.eql(\"INSUFFICIENT_BALANCE\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"numberOfCoins\": 10000\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/redeem",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"redeem"
+					]
+				},
+				"description": "Test error scenario - attempting to redeem more coins than available balance"
+			},
+			"response": []
+		},
+		{
+			"name": "Test Invalid Input Error",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 400 (Bad Request)\", function () {",
+							"    pm.response.to.have.status(400);",
+							"});",
+							"",
+							"pm.test(\"Validation error returned\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(false);",
+							"    pm.expect(jsonData.errorCode).to.eql(\"VALIDATION_ERROR\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "userId",
+						"value": "{{userId}}",
+						"description": "User ID header for the request"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"numberOfCoins\": -10\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/rewards",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"rewards"
+					]
+				},
+				"description": "Test error scenario - attempting to credit negative coins"
+			},
+			"response": []
+		},
+		{
+			"name": "Test Missing Header Error",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 400 (Bad Request)\", function () {",
+							"    pm.response.to.have.status(400);",
+							"});",
+							"",
+							"pm.test(\"Missing header error returned\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.success).to.eql(false);",
+							"    pm.expect(jsonData.errorCode).to.eql(\"MISSING_HEADER\");",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/balance",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"balance"
+					]
+				},
+				"description": "Test error scenario - missing required userId header"
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080/api/v1",
+			"type": "string",
+			"description": "Base URL for the Reward Management API"
+		},
+		{
+			"key": "userId",
+			"value": "testuser123",
+			"type": "string",
+			"description": "Default user ID for testing (change as needed)"
+		}
+	]
+}

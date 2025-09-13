@@ -5,6 +5,7 @@ import com.rewardmanagement.reward_management.dto.RedeemRequest;
 import com.rewardmanagement.reward_management.dto.RewardRequest;
 import com.rewardmanagement.reward_management.dto.ViewResult;
 import com.rewardmanagement.reward_management.service.RewardManagementService;
+import com.rewardmanagement.reward_management.service.ExpiryManagementService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.extern.slf4j.Slf4j;
@@ -30,15 +31,18 @@ import org.springframework.web.bind.annotation.*;
 public class RewardController {
 
     private final RewardManagementService rewardManagementService;
+    private final ExpiryManagementService expiryManagementService;
 
     /**
      * Constructor for dependency injection.
      * 
      * @param rewardManagementService Service for reward management operations
+     * @param expiryManagementService Service for expiry management operations
      */
     @Autowired
-    public RewardController(RewardManagementService rewardManagementService) {
+    public RewardController(RewardManagementService rewardManagementService, ExpiryManagementService expiryManagementService) {
         this.rewardManagementService = rewardManagementService;
+        this.expiryManagementService = expiryManagementService;
     }
 
     /**
@@ -193,5 +197,27 @@ public class RewardController {
     @GetMapping("/health")
     public ResponseEntity<ApiResponse<String>> healthCheck() {
         return ResponseEntity.ok(ApiResponse.success("OK", "Reward Management Service is healthy"));
+    }
+    
+    /**
+     * Manual trigger for processing expired rewards for a specific user.
+     * This endpoint is useful for testing real-time expiry processing.
+     * 
+     * @param userId User ID from header
+     * @return API response with processing result
+     */
+    @PostMapping("/admin/process-expired")
+    public ResponseEntity<ApiResponse<String>> processExpiredRewards(
+            @RequestHeader("userId") @NotBlank(message = "User ID is required") String userId) {
+        log.info("Manual trigger for expired rewards processing for user: {}", userId);
+        
+        try {
+            String result = expiryManagementService.triggerExpiredRewardsProcessingForUser(userId);
+            return ResponseEntity.ok(ApiResponse.success(result));
+        } catch (Exception e) {
+            log.error("Error processing expired rewards for user {}: {}", userId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("Failed to process expired rewards: " + e.getMessage()));
+        }
     }
 }

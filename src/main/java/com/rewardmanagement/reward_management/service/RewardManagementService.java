@@ -34,6 +34,7 @@ public class RewardManagementService {
 
     private final UserRepository userRepository;
     private final TransactionRepository transactionRepository;
+    private ExpiryManagementService expiryManagementService;
 
     /**
      * Constructor for dependency injection.
@@ -118,7 +119,15 @@ public class RewardManagementService {
         }
         
         try {
-            // Get user
+            // Process any expired rewards for this user first
+            if (expiryManagementService != null) {
+                int expiredCount = expiryManagementService.processExpiredRewardsForUser(userId);
+                if (expiredCount > 0) {
+                    log.info("Processed {} expired rewards for user {} during redemption", expiredCount, userId);
+                }
+            }
+            
+            // Get user (refresh after potential expiry processing)
             User user = userRepository.findByUserId(userId)
                     .orElseThrow(() -> new UserNotFoundException(userId));
             
@@ -163,7 +172,15 @@ public class RewardManagementService {
         log.debug("Retrieving view for user: {}", userId);
         
         try {
-            // Get user
+            // Process any expired rewards for this user first
+            if (expiryManagementService != null) {
+                int expiredCount = expiryManagementService.processExpiredRewardsForUser(userId);
+                if (expiredCount > 0) {
+                    log.info("Processed {} expired rewards for user {} during view operation", expiredCount, userId);
+                }
+            }
+            
+            // Get user (refresh after potential expiry processing)
             User user = userRepository.findByUserId(userId)
                     .orElseThrow(() -> new UserNotFoundException(userId));
             
@@ -175,10 +192,16 @@ public class RewardManagementService {
                     .map(this::convertToTransactionResponse)
                     .collect(Collectors.toList());
             
-            // Calculate coins expiring in next 30 minutes
-            LocalDateTime thirtyMinutesFromNow = LocalDateTime.now().plusMinutes(30);
+            // Calculate actual balance from transactions
+            int actualBalance = transactions.stream()
+                    .mapToInt(Transaction::getBalanceImpact)
+                    .sum();
+            
+            // Calculate coins expiring in next 30 minutes (only active rewards)
+            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime thirtyMinutesFromNow = now.plusMinutes(30);
             List<Transaction> expiringTransactions = transactionRepository
-                    .findUserRewardsExpiringBefore(userId, thirtyMinutesFromNow);
+                    .findUserRewardsExpiringBefore(userId, thirtyMinutesFromNow, now);
             
             int coinsExpiringIn30Mins = expiringTransactions.stream()
                     .mapToInt(Transaction::getBalanceImpact)
@@ -191,7 +214,7 @@ public class RewardManagementService {
             // Build and return ViewResult
             ViewResult result = new ViewResult();
             result.setUserId(userId);
-            result.setTotalCoins(user.getCoins());
+            result.setTotalCoins(actualBalance); // Use calculated balance instead of user.getCoins()
             result.setTransactions(transactionResponses);
             result.setCoinsExpiringIn30Mins(coinsExpiringIn30Mins);
             result.setActiveRewardTransactions(activeRewards.size());
@@ -224,6 +247,14 @@ public class RewardManagementService {
         log.debug("Getting balance for user: {}", userId);
         
         try {
+            // Process any expired rewards for this user first
+            if (expiryManagementService != null) {
+                int expiredCount = expiryManagementService.processExpiredRewardsForUser(userId);
+                if (expiredCount > 0) {
+                    log.info("Processed {} expired rewards for user {} during balance check", expiredCount, userId);
+                }
+            }
+            
             return userRepository.getUserBalance(userId)
                     .orElseThrow(() -> new UserNotFoundException(userId));
         } catch (UserNotFoundException e) {
@@ -299,6 +330,17 @@ public class RewardManagementService {
             newUser.setCoins(0);
                     return userRepository.save(newUser);
                 });
+    }
+    
+    /**
+     * Sets the ExpiryManagementService reference to avoid circular dependency.
+     * This is called by Spring after bean creation.
+     * 
+     * @param expiryManagementService The expiry management service
+     */
+    @Autowired
+    public void setExpiryManagementService(ExpiryManagementService expiryManagementService) {
+        this.expiryManagementService = expiryManagementService;
     }
 
 

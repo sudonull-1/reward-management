@@ -52,16 +52,22 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
     List<Transaction> findExpiringRewardTransactions(@Param("expiryTime") LocalDateTime expiryTime);
     
     /**
-     * Finds reward transactions for a user that will expire within specified minutes.
+     * Finds active reward transactions for a user that will expire within specified minutes.
+     * Only includes rewards that haven't been processed for expiry yet.
      * 
      * @param userId The user ID
      * @param expiryTime The expiry timestamp to check against
-     * @return List of reward transactions expiring before the specified time
+     * @param currentTime Current timestamp to exclude already expired rewards
+     * @return List of active reward transactions expiring before the specified time
      */
     @Query("SELECT t FROM Transaction t WHERE t.user.userId = :userId AND t.transactionType = 'REWARD' " +
-           "AND t.expiresAt <= :expiryTime ORDER BY t.expiresAt ASC")
+           "AND t.expiresAt <= :expiryTime AND t.expiresAt > :currentTime " +
+           "AND NOT EXISTS (SELECT e FROM Transaction e WHERE e.user.userId = :userId AND e.transactionType = 'EXPIRY' " +
+           "AND e.numberOfCoins = t.numberOfCoins AND e.createdAt > t.createdAt) " +
+           "ORDER BY t.expiresAt ASC")
     List<Transaction> findUserRewardsExpiringBefore(@Param("userId") String userId, 
-                                                   @Param("expiryTime") LocalDateTime expiryTime);
+                                                   @Param("expiryTime") LocalDateTime expiryTime,
+                                                   @Param("currentTime") LocalDateTime currentTime);
     
     /**
      * Calculates the total coins for a user from active (non-expired) reward transactions.
@@ -146,4 +152,17 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
      */
     @Query("SELECT t FROM Transaction t WHERE t.transactionType = 'REWARD' AND t.expiresAt <= :currentTime")
     List<Transaction> findExpiredRewardTransactions(@Param("currentTime") LocalDateTime currentTime);
+    
+    /**
+     * Finds expired reward transactions for a specific user that haven't been processed yet.
+     * Uses a more precise approach to avoid duplicate processing.
+     * 
+     * @param userId The user ID to find expired rewards for
+     * @param currentTime Current timestamp to compare against expiry time
+     * @return List of expired reward transactions for the user that need processing
+     */
+    @Query("SELECT DISTINCT t FROM Transaction t WHERE t.user.userId = :userId AND t.transactionType = 'REWARD' " +
+           "AND t.expiresAt <= :currentTime " +
+           "ORDER BY t.expiresAt ASC")
+    List<Transaction> findExpiredRewardTransactionsByUser(@Param("userId") String userId, @Param("currentTime") LocalDateTime currentTime);
 }

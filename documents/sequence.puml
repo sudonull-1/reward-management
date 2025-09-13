@@ -1,0 +1,42 @@
+@startuml
+actor User
+participant LB
+participant reward_service
+participant redeem_service
+participant view_service
+database DB
+database cache
+
+== Reward Flow ==
+group Reward Flow
+User -> LB : /post /rewards
+LB -> reward_service : /post /rewards
+reward_service -> DB : update query (add coins)
+DB --> reward_service : success
+reward_service --> LB : success
+LB --> User : success
+end
+
+== Redeem Flow ==
+group Redeem Flow
+User -> LB : /post /redeem
+LB -> redeem_service : /post /redeem
+redeem_service -> DB : update query (deduct coins)
+DB --> redeem_service : success/failure
+redeem_service --> LB : success/failure
+LB --> User : success/failure
+end
+
+== View Flow ==
+group View Flow
+User -> LB : /get /view/coins
+LB -> view_service : /get /view/coins
+view_service -> DB : select query (balance + transactions)
+DB --> view_service : db result
+view_service -> cache : check the transaction_id and expiry
+cache -> view_service : cache result
+view_service -> view_service : remove the intersection of cache result and db result
+view_service --> LB : success (coins + history)
+LB --> User : success (coins + history)
+end
+@enduml

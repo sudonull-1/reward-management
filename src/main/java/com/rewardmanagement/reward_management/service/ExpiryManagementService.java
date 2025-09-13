@@ -1,8 +1,10 @@
 package com.rewardmanagement.reward_management.service;
 
 import com.rewardmanagement.reward_management.entity.Transaction;
+import com.rewardmanagement.reward_management.entity.User;
 import com.rewardmanagement.reward_management.exception.RewardManagementException;
 import com.rewardmanagement.reward_management.repository.TransactionRepository;
+import com.rewardmanagement.reward_management.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -16,10 +18,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import com.rewardmanagement.reward_management.entity.TransactionType;
 
 /**
  * Service responsible for managing coin expiry operations.
- * Runs scheduled tasks to process expired rewards and maintain expiry cache.
+ * Handles real-time expiry processing and maintains expiry cache.
  * 
  * @author Reward Management System
  * @version 1.0
@@ -30,7 +33,7 @@ import java.util.stream.Collectors;
 public class ExpiryManagementService {
 
     private final TransactionRepository transactionRepository;
-    private final RewardManagementService rewardManagementService;
+    private final UserRepository userRepository;
     private final RedisTemplate<String, Object> redisTemplate;
     
     private static final String EXPIRY_CACHE_PREFIX = "reward:expiry:";
@@ -41,15 +44,15 @@ public class ExpiryManagementService {
      * Constructor for dependency injection.
      * 
      * @param transactionRepository Repository for transaction operations
-     * @param rewardManagementService Service for reward management operations
+     * @param userRepository Repository for user operations
      * @param redisTemplate Redis template for cache operations
      */
     @Autowired
     public ExpiryManagementService(TransactionRepository transactionRepository, 
-                                 RewardManagementService rewardManagementService,
+                                 UserRepository userRepository,
                                  RedisTemplate<String, Object> redisTemplate) {
         this.transactionRepository = transactionRepository;
-        this.rewardManagementService = rewardManagementService;
+        this.userRepository = userRepository;
         this.redisTemplate = redisTemplate;
     }
 
@@ -111,99 +114,206 @@ public class ExpiryManagementService {
     }
 
     /**
-     * Scheduled task that runs every hour to process and clean up expired reward transactions.
-     * This task actually processes the expired rewards and deducts coins from user balances.
+     * Processes expired rewards for a specific user immediately.
+     * This method is called during user operations to handle expiry in real-time.
+     * Includes duplicate prevention logic.
+     * 
+     * @param userId The user ID to process expired rewards for
+     * @return Number of expired transactions processed
      */
-    @Scheduled(fixedRate = 60 * 60 * 1000) // 1 hour in milliseconds
-    public void processExpiredRewards() {
-        log.info("Starting expired rewards processing task");
+    public int processExpiredRewardsForUser(String userId) {
+        log.info("Processing expired rewards for user: {}", userId);
         
         try {
-            int processedCount = rewardManagementService.processExpiredRewards();
+            // Find expired rewards for this specific user
+            List<Transaction> expiredRewards = transactionRepository
+                    .findExpiredRewardTransactionsByUser(userId, LocalDateTime.now());
+            
+            if (expiredRewards.isEmpty()) {
+                log.info("No expired rewards found for user: {}", userId);
+                return 0;
+            }
+            
+            log.info("Found {} expired rewards for user: {}", expiredRewards.size(), userId);
+            
+            // Filter out rewards that have already been processed
+            List<Transaction> unprocessedExpiredRewards = expiredRewards.stream()
+                    .filter(reward -> !hasBeenProcessedForExpiry(userId, reward))
+                    .collect(Collectors.toList());
+            
+            if (unprocessedExpiredRewards.isEmpty()) {
+                log.info("All expired rewards for user {} have already been processed", userId);
+                return 0;
+            }
+            
+            log.info("Found {} unprocessed expired rewards for user: {}", unprocessedExpiredRewards.size(), userId);
+            
+            int processedCount = 0;
+            User user = null;
+            
+            for (Transaction expiredReward : unprocessedExpiredRewards) {
+                try {
+                    // Get user if not already loaded
+                    if (user == null) {
+                        user = expiredReward.getUser();
+                    }
+                    
+                    // Create expiry transaction immediately
+                    Transaction expiryTransaction = Transaction.createExpiryTransaction(
+                            user, expiredReward.getNumberOfCoins());
+                    
+                    // Save expiry transaction
+                    transactionRepository.save(expiryTransaction);
+                    
+                    // Update user balance
+                    user.removeCoins(expiredReward.getNumberOfCoins());
+                    
+                    processedCount++;
+                    
+                    log.debug("Processed expiry for user {}: {} coins from transaction {}", 
+                            userId, expiredReward.getNumberOfCoins(), expiredReward.getTransactionId());
+                            
+                } catch (Exception e) {
+                    log.error("Failed to process expiry for transaction {}: {}", 
+                            expiredReward.getTransactionId(), e.getMessage(), e);
+                }
+            }
+            
+            // Save updated user balance if any expiries were processed
+            if (processedCount > 0 && user != null) {
+                userRepository.save(user);
+                log.info("Processed {} expired transactions for user {}", processedCount, userId);
+            }
+            
+            return processedCount;
+            
+        } catch (Exception e) {
+            log.error("Error processing expired rewards for user {}: {}", userId, e.getMessage(), e);
+            return 0;
+        }
+    }
+    
+    /**
+     * Checks if a reward transaction has already been processed for expiry.
+     * This prevents duplicate expiry processing by using a more precise matching approach.
+     * 
+     * @param userId The user ID
+     * @param rewardTransaction The reward transaction to check
+     * @return true if already processed, false otherwise
+     */
+    private boolean hasBeenProcessedForExpiry(String userId, Transaction rewardTransaction) {
+        try {
+            // Look for expiry transactions that match this specific reward
+            List<Transaction> expiryTransactions = transactionRepository
+                    .findByUserIdAndTransactionType(userId, TransactionType.EXPIRY);
+            
+            // Check if there's an expiry transaction that corresponds to this reward
+            return expiryTransactions.stream()
+                    .anyMatch(expiry -> {
+                        // Match by number of coins and timing
+                        boolean coinsMatch = expiry.getNumberOfCoins().equals(rewardTransaction.getNumberOfCoins());
+                        boolean createdAfterReward = expiry.getCreatedAt().isAfter(rewardTransaction.getCreatedAt());
+                        boolean createdAfterExpiry = expiry.getCreatedAt().isAfter(rewardTransaction.getExpiresAt().minusSeconds(30));
+                        
+                        // Additional check: ensure the expiry was created within a reasonable time window
+                        boolean withinReasonableTime = expiry.getCreatedAt().isBefore(rewardTransaction.getExpiresAt().plusHours(1));
+                        
+                        return coinsMatch && createdAfterReward && createdAfterExpiry && withinReasonableTime;
+                    });
+        } catch (Exception e) {
+            log.warn("Error checking if reward has been processed for expiry: {}", e.getMessage());
+            return false; // If we can't determine, allow processing to be safe
+        }
+    }
+    
+    /**
+     * Scheduled task that runs every hour as a cleanup job.
+     * This is now a backup mechanism to catch any missed expiries.
+     */
+    @Scheduled(fixedRate = 60 * 60 * 1000) // 1 hour in milliseconds
+    public void cleanupExpiredRewards() {
+        log.info("Starting expired rewards cleanup task");
+        
+        try {
+            int processedCount = processAllExpiredRewards();
             
             // Update processing statistics in Redis
             Map<String, Object> processingStats = new HashMap<>();
-            processingStats.put("lastProcessingRun", LocalDateTime.now().format(DATE_FORMATTER));
+            processingStats.put("lastCleanupRun", LocalDateTime.now().format(DATE_FORMATTER));
             processingStats.put("expiredTransactionsProcessed", processedCount);
             
-            redisTemplate.opsForValue().set("reward:expiry:processing:stats", 
+            redisTemplate.opsForValue().set("reward:expiry:cleanup:stats", 
                     processingStats, 24, TimeUnit.HOURS);
             
-            log.info("Completed expired rewards processing. Processed {} expired transactions", processedCount);
-            
-        } catch (Exception e) {
-            log.error("Error processing expired rewards: {}", e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Gets expiry information for a specific user from Redis cache.
-     * 
-     * @param userId The user ID to get expiry information for
-     * @return Map containing expiry information, or null if not found
-     */
-    public Map<String, Object> getUserExpiryInfo(String userId) {
-        try {
-            String cacheKey = EXPIRY_CACHE_PREFIX + userId;
-            Object cachedData = redisTemplate.opsForValue().get(cacheKey);
-            
-            if (cachedData instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> expiryInfo = (Map<String, Object>) cachedData;
-                return expiryInfo;
+            if (processedCount > 0) {
+                log.warn("Cleanup processed {} expired transactions that were missed by real-time processing", processedCount);
+            } else {
+                log.info("Cleanup completed - no expired transactions found (real-time processing working correctly)");
             }
             
-            return null;
-            
         } catch (Exception e) {
-            log.warn("Error retrieving expiry info for user {}: {}", userId, e.getMessage());
-            return null;
+            log.error("Error during expired rewards cleanup: {}", e.getMessage(), e);
         }
     }
-
+    
     /**
-     * Gets general expiry statistics from Redis cache.
+     * Processes all expired reward transactions (used by cleanup job).
+     * This method replaces the call to RewardManagementService to avoid circular dependency.
      * 
-     * @return Map containing expiry statistics, or empty map if not found
+     * @return Number of expired transactions processed
      */
-    public Map<String, Object> getExpiryStatistics() {
+    private int processAllExpiredRewards() {
+        log.info("Starting expired rewards processing");
+        
         try {
-            Object cachedStats = redisTemplate.opsForValue().get(EXPIRY_STATS_KEY);
+            List<Transaction> expiredRewards = transactionRepository
+                    .findExpiredRewardTransactions(LocalDateTime.now());
             
-            if (cachedStats instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> stats = (Map<String, Object>) cachedStats;
-                return stats;
+            int processedCount = 0;
+            
+            for (Transaction expiredReward : expiredRewards) {
+                try {
+                    // Create expiry transaction
+                    Transaction expiryTransaction = Transaction.createExpiryTransaction(
+                            expiredReward.getUser(), expiredReward.getNumberOfCoins());
+                    
+                    // Save expiry transaction
+                    transactionRepository.save(expiryTransaction);
+                    
+                    // Update user balance
+                    User user = expiredReward.getUser();
+                    user.removeCoins(expiredReward.getNumberOfCoins());
+                    userRepository.save(user);
+                    
+                    processedCount++;
+                    
+                    log.debug("Processed expiry for user {}: {} coins", 
+                            user.getUserId(), expiredReward.getNumberOfCoins());
+                            
+                } catch (Exception e) {
+                    log.error("Failed to process expiry for transaction {}: {}", 
+                            expiredReward.getTransactionId(), e.getMessage(), e);
+                }
             }
             
-            return new HashMap<>();
+            log.info("Completed expired rewards processing. Processed {} transactions", processedCount);
+            return processedCount;
             
         } catch (Exception e) {
-            log.warn("Error retrieving expiry statistics: {}", e.getMessage());
-            return new HashMap<>();
+            log.error("Failed to process expired rewards: {}", e.getMessage(), e);
+            throw new RewardManagementException("Failed to process expired rewards: " + e.getMessage(), e);
         }
     }
-
+    
     /**
-     * Manual trigger for expiry cache update (for testing or admin purposes).
+     * Manual trigger for processing expired rewards for a specific user.
      * 
-     * @return Success message
-     */
-    public String triggerExpiryUpdate() {
-        log.info("Manual trigger for expiry cache update");
-        updateExpiryCache();
-        return "Expiry cache update triggered successfully";
-    }
-
-    /**
-     * Manual trigger for expired rewards processing (for testing or admin purposes).
-     * 
+     * @param userId The user ID to process expired rewards for
      * @return Success message with processed count
-     * @throws RewardManagementException if processing fails
      */
-    public String triggerExpiredRewardsProcessing() {
-        log.info("Manual trigger for expired rewards processing");
-        int processedCount = rewardManagementService.processExpiredRewards();
-        return String.format("Processed %d expired transactions", processedCount);
+    public String triggerExpiredRewardsProcessingForUser(String userId) {
+        log.info("Manual trigger for expired rewards processing for user: {}", userId);
+        int processedCount = processExpiredRewardsForUser(userId);
+        return String.format("Processed %d expired transactions for user %s", processedCount, userId);
     }
 }

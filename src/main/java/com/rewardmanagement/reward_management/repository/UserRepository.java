@@ -95,12 +95,18 @@ public interface UserRepository extends JpaRepository<User, String> {
     boolean existsByUserId(String userId);
     
     /**
-     * Gets the current coin balance for a user.
+     * Gets the current coin balance for a user calculated from transactions.
+     * This ensures the balance is always accurate based on transaction history.
      * 
      * @param userId The user ID
-     * @return Optional containing the coin balance if user exists
+     * @return Optional containing the calculated coin balance if user exists
      */
-    @Query("SELECT u.coins FROM User u WHERE u.userId = :userId")
+    @Query("SELECT COALESCE(SUM(CASE " +
+           "WHEN t.transactionType = 'REWARD' THEN t.numberOfCoins " +
+           "WHEN t.transactionType = 'REDEEM' THEN -t.numberOfCoins " +
+           "WHEN t.transactionType = 'EXPIRY' THEN -t.numberOfCoins " +
+           "ELSE 0 END), 0) " +
+           "FROM User u LEFT JOIN u.transactions t WHERE u.userId = :userId")
     Optional<Integer> getUserBalance(@Param("userId") String userId);
     
     /**

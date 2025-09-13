@@ -1,8 +1,10 @@
 package com.rewardmanagement.reward_management.service;
 
+import com.rewardmanagement.reward_management.dto.AvailableRewardResponse;
 import com.rewardmanagement.reward_management.dto.TransactionResponse;
 import com.rewardmanagement.reward_management.dto.ViewResult;
 import com.rewardmanagement.reward_management.entity.Transaction;
+import com.rewardmanagement.reward_management.entity.TransactionType;
 import com.rewardmanagement.reward_management.entity.User;
 import com.rewardmanagement.reward_management.exception.InsufficientBalanceException;
 import com.rewardmanagement.reward_management.exception.InvalidTransactionException;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -34,6 +37,7 @@ public class RewardManagementService {
 
     private final UserRepository userRepository;
     private final TransactionRepository transactionRepository;
+    private final FifoCoinsService fifoCoinsService;
     private ExpiryManagementService expiryManagementService;
 
     /**
@@ -43,9 +47,10 @@ public class RewardManagementService {
      * @param transactionRepository Repository for transaction operations
      */
     @Autowired
-    public RewardManagementService(UserRepository userRepository, TransactionRepository transactionRepository) {
+    public RewardManagementService(UserRepository userRepository, TransactionRepository transactionRepository, FifoCoinsService fifoCoinsService) {
         this.userRepository = userRepository;
         this.transactionRepository = transactionRepository;
+        this.fifoCoinsService = fifoCoinsService;
     }
 
     /**
@@ -131,20 +136,17 @@ public class RewardManagementService {
             User user = userRepository.findByUserId(userId)
                     .orElseThrow(() -> new UserNotFoundException(userId));
             
-            // Check sufficient balance
-            if (!user.hasSufficientBalance(numberOfCoins)) {
-                throw new InsufficientBalanceException(userId, user.getCoins(), numberOfCoins);
+            // Check sufficient balance using FIFO calculation
+            int availableBalance = fifoCoinsService.getTotalAvailableBalance(userId);
+            if (availableBalance < numberOfCoins) {
+                throw new InsufficientBalanceException(userId, availableBalance, numberOfCoins);
             }
             
-            // Create redeem transaction
-            Transaction redeemTransaction = Transaction.createRedeemTransaction(user, numberOfCoins);
+            // Use FIFO logic to redeem coins (coins expiring first are redeemed first)
+            List<Transaction> redeemTransactions = fifoCoinsService.redeemCoinsWithFifo(user, numberOfCoins);
             
-            // Save transaction first (for audit trail)
-            transactionRepository.save(redeemTransaction);
-            
-            // Update user balance
-            user.removeCoins(numberOfCoins);
-            userRepository.save(user);
+            log.info("Created {} FIFO redeem transactions for user {} totaling {} coins", 
+                    redeemTransactions.size(), userId, numberOfCoins);
             
             log.info("Successfully redeemed {} coins from user {}. New balance: {}", 
                     numberOfCoins, userId, user.getCoins());
@@ -197,32 +199,67 @@ public class RewardManagementService {
                     .map(this::convertToTransactionResponse)
                     .collect(Collectors.toList());
             
-            // Calculate actual balance from transactions
-            int actualBalance = transactions.stream()
-                    .mapToInt(Transaction::getBalanceImpact)
+            // Get available rewards in FIFO order (expiring first)
+            List<FifoCoinsService.AvailableReward> availableRewards = fifoCoinsService.getAvailableRewards(userId);
+            
+            // Calculate actual balance from available rewards
+            int actualBalance = availableRewards.stream()
+                    .mapToInt(FifoCoinsService.AvailableReward::getRemainingCoins)
                     .sum();
             
-            // Calculate coins expiring in next 30 minutes (only active rewards)
+            // Convert to response DTOs with FIFO order and detailed breakdown
+            List<AvailableRewardResponse> availableRewardResponses = new ArrayList<>();
             LocalDateTime now = LocalDateTime.now();
             LocalDateTime thirtyMinutesFromNow = now.plusMinutes(30);
-            List<Transaction> expiringTransactions = transactionRepository
-                    .findUserRewardsExpiringBefore(userId, thirtyMinutesFromNow, now);
+            int coinsExpiringIn30Mins = 0;
             
-            int coinsExpiringIn30Mins = expiringTransactions.stream()
-                    .mapToInt(Transaction::getBalanceImpact)
-                    .sum();
-            
-            // Count active reward transactions
-            List<Transaction> activeRewards = transactionRepository
-                    .findActiveRewardTransactions(userId, LocalDateTime.now());
+            for (int i = 0; i < availableRewards.size(); i++) {
+                FifoCoinsService.AvailableReward availableReward = availableRewards.get(i);
+                Transaction rewardTransaction = availableReward.getRewardTransaction();
+                
+                // Get consumption details for this reward
+                List<Transaction> consumptionTransactions = transactionRepository
+                        .findConsumptionTransactionsByReward(rewardTransaction.getTransactionId());
+                
+                int redeemedCoins = consumptionTransactions.stream()
+                        .filter(t -> t.getTransactionType() == TransactionType.REDEEM)
+                        .mapToInt(Transaction::getNumberOfCoins)
+                        .sum();
+                
+                int expiredCoins = consumptionTransactions.stream()
+                        .filter(t -> t.getTransactionType() == TransactionType.EXPIRY)
+                        .mapToInt(Transaction::getNumberOfCoins)
+                        .sum();
+                
+                // Check if this reward expires in next 30 minutes
+                if (rewardTransaction.getExpiresAt() != null && 
+                    rewardTransaction.getExpiresAt().isAfter(now) && 
+                    rewardTransaction.getExpiresAt().isBefore(thirtyMinutesFromNow)) {
+                    coinsExpiringIn30Mins += availableReward.getRemainingCoins();
+                }
+                
+                AvailableRewardResponse response = new AvailableRewardResponse();
+                response.setRewardTransactionId(rewardTransaction.getTransactionId());
+                response.setOriginalCoins(rewardTransaction.getNumberOfCoins());
+                response.setRemainingCoins(availableReward.getRemainingCoins());
+                response.setRedeemedCoins(redeemedCoins);
+                response.setExpiredCoins(expiredCoins);
+                response.setExpiresAt(rewardTransaction.getExpiresAt());
+                response.setCreatedAt(rewardTransaction.getCreatedAt());
+                response.setIsExpired(rewardTransaction.isExpired());
+                response.setFifoOrder(i + 1); // 1-based order
+                
+                availableRewardResponses.add(response);
+            }
             
             // Build and return ViewResult
             ViewResult result = new ViewResult();
             result.setUserId(userId);
-            result.setTotalCoins(actualBalance); // Use calculated balance instead of user.getCoins()
+            result.setTotalCoins(actualBalance); // Use FIFO calculated balance
             result.setTransactions(transactionResponses);
             result.setCoinsExpiringIn30Mins(coinsExpiringIn30Mins);
-            result.setActiveRewardTransactions(activeRewards.size());
+            result.setActiveRewardTransactions(availableRewards.size());
+            result.setAvailableRewards(availableRewardResponses); // FIFO ordered rewards
             result.setGeneratedAt(LocalDateTime.now());
             
             log.debug("Successfully retrieved view for user {}. Balance: {}, Transactions: {}", 

@@ -165,4 +165,39 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
            "AND t.expiresAt <= :currentTime " +
            "ORDER BY t.expiresAt ASC")
     List<Transaction> findExpiredRewardTransactionsByUser(@Param("userId") String userId, @Param("currentTime") LocalDateTime currentTime);
+    
+    /**
+     * Finds available reward transactions for a user ordered by expiry date (FIFO).
+     * Returns rewards that haven't been fully redeemed or expired yet.
+     * 
+     * @param userId The user ID
+     * @param currentTime Current timestamp
+     * @return List of available reward transactions ordered by expiry date (earliest first)
+     */
+    @Query("SELECT t FROM Transaction t WHERE t.user.userId = :userId AND t.transactionType = 'REWARD' " +
+           "AND (t.expiresAt IS NULL OR t.expiresAt > :currentTime) " +
+           "ORDER BY t.expiresAt ASC NULLS LAST")
+    List<Transaction> findAvailableRewardTransactionsByUser(@Param("userId") String userId, @Param("currentTime") LocalDateTime currentTime);
+    
+    /**
+     * Calculates the remaining coins for a specific reward transaction.
+     * This considers all REDEEM and EXPIRY transactions that reference this reward.
+     * 
+     * @param rewardTransactionId The reward transaction ID
+     * @return The remaining coins available from this reward
+     */
+    @Query("SELECT COALESCE(:originalCoins - SUM(t.numberOfCoins), :originalCoins) " +
+           "FROM Transaction t WHERE t.sourceReward.transactionId = :rewardTransactionId " +
+           "AND t.transactionType IN ('REDEEM', 'EXPIRY')")
+    Integer calculateRemainingCoins(@Param("rewardTransactionId") UUID rewardTransactionId, @Param("originalCoins") Integer originalCoins);
+    
+    /**
+     * Finds all REDEEM and EXPIRY transactions for a specific reward transaction.
+     * 
+     * @param rewardTransactionId The reward transaction ID
+     * @return List of transactions that consumed coins from this reward
+     */
+    @Query("SELECT t FROM Transaction t WHERE t.sourceReward.transactionId = :rewardTransactionId " +
+           "AND t.transactionType IN ('REDEEM', 'EXPIRY') ORDER BY t.createdAt ASC")
+    List<Transaction> findConsumptionTransactionsByReward(@Param("rewardTransactionId") UUID rewardTransactionId);
 }

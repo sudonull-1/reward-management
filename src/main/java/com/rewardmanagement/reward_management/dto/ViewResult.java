@@ -46,4 +46,10 @@ public class ViewResult {
      * Timestamp when this result was generated.
      */
     private LocalDateTime generatedAt = LocalDateTime.now();
+    
+    /**
+     * Available rewards ordered by FIFO (expiring first).
+     * Shows detailed breakdown of each reward's remaining coins.
+     */
+    private List<AvailableRewardResponse> availableRewards;
 }

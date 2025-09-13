@@ -51,6 +51,16 @@ public class Transaction {
     private User user;
     
     /**
+     * Reference to the source reward transaction for REDEEM and EXPIRY transactions.
+     * This field is null for REWARD transactions and points to the reward transaction
+     * from which coins are being redeemed or expired.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "source_reward_id", foreignKey = @ForeignKey(name = "fk_transaction_source_reward"))
+    @ToString.Exclude
+    private Transaction sourceReward;
+    
+    /**
      * Type of transaction (REWARD, REDEEM, EXPIRY).
      */
     @Enumerated(EnumType.STRING)
@@ -134,6 +144,32 @@ public class Transaction {
     }
     
     /**
+     * Creates a new redeem transaction from a specific reward transaction.
+     * This tracks which reward transaction the coins are being redeemed from.
+     * 
+     * @param user The user redeeming coins
+     * @param numberOfCoins Number of coins to redeem
+     * @param sourceReward The reward transaction coins are being redeemed from
+     * @return New Transaction instance
+     */
+    public static Transaction createRedeemTransaction(User user, int numberOfCoins, Transaction sourceReward) {
+        if (numberOfCoins <= 0) {
+            throw new IllegalArgumentException("Number of coins must be positive");
+        }
+        if (sourceReward == null || sourceReward.getTransactionType() != TransactionType.REWARD) {
+            throw new IllegalArgumentException("Source reward must be a valid REWARD transaction");
+        }
+        
+        Transaction transaction = new Transaction();
+        transaction.setUser(user);
+        transaction.setTransactionType(TransactionType.REDEEM);
+        transaction.setNumberOfCoins(numberOfCoins);
+        transaction.setExpiresAt(null); // Redeem transactions don't expire
+        transaction.setSourceReward(sourceReward);
+        return transaction;
+    }
+    
+    /**
      * Creates a new expiry transaction.
      * Expiry transactions are created when reward coins expire.
      * 
@@ -151,6 +187,32 @@ public class Transaction {
         transaction.setTransactionType(TransactionType.EXPIRY);
         transaction.setNumberOfCoins(numberOfCoins);
         transaction.setExpiresAt(null); // Expiry transactions don't have expiration
+        return transaction;
+    }
+    
+    /**
+     * Creates a new expiry transaction from a specific reward transaction.
+     * This tracks which reward transaction the coins are expiring from.
+     * 
+     * @param user The user whose coins are expiring
+     * @param numberOfCoins Number of coins expiring
+     * @param sourceReward The reward transaction coins are expiring from
+     * @return New Transaction instance
+     */
+    public static Transaction createExpiryTransaction(User user, int numberOfCoins, Transaction sourceReward) {
+        if (numberOfCoins <= 0) {
+            throw new IllegalArgumentException("Number of coins must be positive");
+        }
+        if (sourceReward == null || sourceReward.getTransactionType() != TransactionType.REWARD) {
+            throw new IllegalArgumentException("Source reward must be a valid REWARD transaction");
+        }
+        
+        Transaction transaction = new Transaction();
+        transaction.setUser(user);
+        transaction.setTransactionType(TransactionType.EXPIRY);
+        transaction.setNumberOfCoins(numberOfCoins);
+        transaction.setExpiresAt(null); // Expiry transactions don't have expiration dates
+        transaction.setSourceReward(sourceReward);
         return transaction;
     }
     

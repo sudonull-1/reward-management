@@ -35,6 +35,7 @@ public class ExpiryManagementService {
 
     private final TransactionRepository transactionRepository;
     private final UserRepository userRepository;
+    private final FifoCoinsService fifoCoinsService;
     private final RedisTemplate<String, Object> redisTemplate;
     
     private static final String EXPIRY_CACHE_PREFIX = "reward:expiry:";
@@ -50,10 +51,12 @@ public class ExpiryManagementService {
      */
     @Autowired
     public ExpiryManagementService(TransactionRepository transactionRepository, 
-                                 UserRepository userRepository,
-                                 RedisTemplate<String, Object> redisTemplate) {
+                                   UserRepository userRepository,
+                                   FifoCoinsService fifoCoinsService,
+                                   RedisTemplate<String, Object> redisTemplate) {
         this.transactionRepository = transactionRepository;
         this.userRepository = userRepository;
+        this.fifoCoinsService = fifoCoinsService;
         this.redisTemplate = redisTemplate;
     }
 
@@ -167,19 +170,27 @@ public class ExpiryManagementService {
                         user = expiredReward.getUser();
                     }
                     
-                    // Create expiry transaction immediately
-                    Transaction expiryTransaction = Transaction.createExpiryTransaction(
-                            user, expiredReward.getNumberOfCoins());
+                    // Calculate remaining coins for this specific reward
+                    Integer remainingCoins = transactionRepository
+                            .calculateRemainingCoins(expiredReward.getTransactionId(), expiredReward.getNumberOfCoins());
                     
-                    // Save expiry transaction
-                    transactionRepository.save(expiryTransaction);
+                    if (remainingCoins == null) {
+                        remainingCoins = expiredReward.getNumberOfCoins();
+                    }
                     
-                    // Note: We don't update user.coins anymore since balance is calculated from transactions
-                    
-                    processedCount++;
-                    
-                    log.info("Processed expiry for user {}: {} coins from transaction {}", 
-                            userId, expiredReward.getNumberOfCoins(), expiredReward.getTransactionId());
+                    if (remainingCoins > 0) {
+                        // Use FIFO service to expire the remaining coins from this specific reward
+                        Transaction expiryTransaction = fifoCoinsService.expireCoinsFromReward(
+                                user, expiredReward, remainingCoins);
+                        
+                        processedCount++;
+                        
+                        log.info("Processed expiry for user {}: {} remaining coins from reward {} (original: {})", 
+                                userId, remainingCoins, expiredReward.getTransactionId(), expiredReward.getNumberOfCoins());
+                    } else {
+                        log.debug("Reward {} for user {} already fully consumed, skipping expiry", 
+                                expiredReward.getTransactionId(), userId);
+                    }
                             
                 } catch (Exception e) {
                     log.error("Failed to process expiry for transaction {}: {}", 

@@ -3,6 +3,7 @@ package com.rewardmanagement.reward_management.service;
 import com.rewardmanagement.reward_management.entity.Transaction;
 import com.rewardmanagement.reward_management.entity.User;
 import com.rewardmanagement.reward_management.exception.RewardManagementException;
+import com.rewardmanagement.reward_management.exception.UserNotFoundException;
 import com.rewardmanagement.reward_management.repository.TransactionRepository;
 import com.rewardmanagement.reward_management.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -126,19 +127,27 @@ public class ExpiryManagementService {
         
         try {
             // Find expired rewards for this specific user
+            LocalDateTime currentTime = LocalDateTime.now();
+            log.info("Checking for expired rewards for user {} at time: {}", userId, currentTime);
             List<Transaction> expiredRewards = transactionRepository
-                    .findExpiredRewardTransactionsByUser(userId, LocalDateTime.now());
+                    .findExpiredRewardTransactionsByUser(userId, currentTime);
             
             if (expiredRewards.isEmpty()) {
-                log.info("No expired rewards found for user: {}", userId);
+                log.info("No expired rewards found for user: {} at time: {}", userId, LocalDateTime.now());
                 return 0;
             }
             
-            log.info("Found {} expired rewards for user: {}", expiredRewards.size(), userId);
+            log.info("Found {} expired rewards for user: {} at time: {}", expiredRewards.size(), userId, LocalDateTime.now());
             
             // Filter out rewards that have already been processed
+            log.info("Before filtering: {} expired rewards found", expiredRewards.size());
             List<Transaction> unprocessedExpiredRewards = expiredRewards.stream()
-                    .filter(reward -> !hasBeenProcessedForExpiry(userId, reward))
+                    .filter(reward -> {
+                        boolean alreadyProcessed = hasBeenProcessedForExpiry(userId, reward);
+                        log.info("Reward {} (coins: {}, expires: {}) - Already processed: {}", 
+                                reward.getTransactionId(), reward.getNumberOfCoins(), reward.getExpiresAt(), alreadyProcessed);
+                        return !alreadyProcessed;
+                    })
                     .collect(Collectors.toList());
             
             if (unprocessedExpiredRewards.isEmpty()) {
@@ -165,12 +174,11 @@ public class ExpiryManagementService {
                     // Save expiry transaction
                     transactionRepository.save(expiryTransaction);
                     
-                    // Update user balance
-                    user.removeCoins(expiredReward.getNumberOfCoins());
+                    // Note: We don't update user.coins anymore since balance is calculated from transactions
                     
                     processedCount++;
                     
-                    log.debug("Processed expiry for user {}: {} coins from transaction {}", 
+                    log.info("Processed expiry for user {}: {} coins from transaction {}", 
                             userId, expiredReward.getNumberOfCoins(), expiredReward.getTransactionId());
                             
                 } catch (Exception e) {
@@ -280,14 +288,15 @@ public class ExpiryManagementService {
                     // Save expiry transaction
                     transactionRepository.save(expiryTransaction);
                     
-                    // Update user balance
-                    User user = expiredReward.getUser();
-                    user.removeCoins(expiredReward.getNumberOfCoins());
-                    userRepository.save(user);
+                    // Get fresh user instance to avoid lazy loading issues  
+                    User user = userRepository.findByUserId(expiredReward.getUser().getUserId())
+                            .orElseThrow(() -> new UserNotFoundException(expiredReward.getUser().getUserId()));
+                    
+                    // Note: We don't update user.coins anymore since balance is calculated from transactions
                     
                     processedCount++;
                     
-                    log.debug("Processed expiry for user {}: {} coins", 
+                    log.info("Processed expiry for user {}: {} coins", 
                             user.getUserId(), expiredReward.getNumberOfCoins());
                             
                 } catch (Exception e) {

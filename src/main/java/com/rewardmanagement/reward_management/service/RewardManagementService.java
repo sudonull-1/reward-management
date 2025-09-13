@@ -173,11 +173,16 @@ public class RewardManagementService {
         
         try {
             // Process any expired rewards for this user first
+            log.info("About to check for expired rewards for user: {}", userId);
             if (expiryManagementService != null) {
+                log.info("ExpiryManagementService is available, calling processExpiredRewardsForUser");
                 int expiredCount = expiryManagementService.processExpiredRewardsForUser(userId);
+                log.info("ExpiryManagementService returned: {} expired rewards processed", expiredCount);
                 if (expiredCount > 0) {
                     log.info("Processed {} expired rewards for user {} during view operation", expiredCount, userId);
                 }
+            } else {
+                log.error("ExpiryManagementService is NULL - this should not happen!");
             }
             
             // Get user (refresh after potential expiry processing)

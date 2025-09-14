@@ -145,17 +145,19 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
                                                   @Param("currentTime") LocalDateTime currentTime);
     
     /**
-     * Finds all expired reward transactions for cleanup purposes.
+     * Finds all expired reward transactions that haven't been fully processed yet.
+     * Excludes rewards that already have expiry transactions linked to them.
      * 
      * @param currentTime Current timestamp
-     * @return List of expired reward transactions
+     * @return List of expired reward transactions that need processing
      */
-    @Query("SELECT t FROM Transaction t WHERE t.transactionType = 'REWARD' AND t.expiresAt <= :currentTime")
+    @Query("SELECT t FROM Transaction t WHERE t.transactionType = 'REWARD' AND t.expiresAt <= :currentTime " +
+           "AND NOT EXISTS (SELECT e FROM Transaction e WHERE e.sourceReward = t AND e.transactionType = 'EXPIRY')")
     List<Transaction> findExpiredRewardTransactions(@Param("currentTime") LocalDateTime currentTime);
     
     /**
      * Finds expired reward transactions for a specific user that haven't been processed yet.
-     * Uses a more precise approach to avoid duplicate processing.
+     * Excludes rewards that already have expiry transactions linked to them via source_reward_id.
      * 
      * @param userId The user ID to find expired rewards for
      * @param currentTime Current timestamp to compare against expiry time
@@ -163,6 +165,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
      */
     @Query("SELECT DISTINCT t FROM Transaction t WHERE t.user.userId = :userId AND t.transactionType = 'REWARD' " +
            "AND t.expiresAt <= :currentTime " +
+           "AND NOT EXISTS (SELECT e FROM Transaction e WHERE e.sourceReward = t AND e.transactionType = 'EXPIRY') " +
            "ORDER BY t.expiresAt ASC")
     List<Transaction> findExpiredRewardTransactionsByUser(@Param("userId") String userId, @Param("currentTime") LocalDateTime currentTime);
     

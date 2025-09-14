@@ -142,28 +142,13 @@ public class ExpiryManagementService {
             
             log.info("Found {} expired rewards for user: {} at time: {}", expiredRewards.size(), userId, LocalDateTime.now());
             
-            // Filter out rewards that have already been processed
-            log.info("Before filtering: {} expired rewards found", expiredRewards.size());
-            List<Transaction> unprocessedExpiredRewards = expiredRewards.stream()
-                    .filter(reward -> {
-                        boolean alreadyProcessed = hasBeenProcessedForExpiry(userId, reward);
-                        log.info("Reward {} (coins: {}, expires: {}) - Already processed: {}", 
-                                reward.getTransactionId(), reward.getNumberOfCoins(), reward.getExpiresAt(), alreadyProcessed);
-                        return !alreadyProcessed;
-                    })
-                    .collect(Collectors.toList());
-            
-            if (unprocessedExpiredRewards.isEmpty()) {
-                log.info("All expired rewards for user {} have already been processed", userId);
-                return 0;
-            }
-            
-            log.info("Found {} unprocessed expired rewards for user: {}", unprocessedExpiredRewards.size(), userId);
+            // Repository query already filters out processed rewards, so we can process all returned rewards
+            log.info("Found {} unprocessed expired rewards for user: {}", expiredRewards.size(), userId);
             
             int processedCount = 0;
             User user = null;
             
-            for (Transaction expiredReward : unprocessedExpiredRewards) {
+            for (Transaction expiredReward : expiredRewards) {
                 try {
                     // Get user if not already loaded
                     if (user == null) {
@@ -214,7 +199,8 @@ public class ExpiryManagementService {
     
     /**
      * Checks if a reward transaction has already been processed for expiry.
-     * This prevents duplicate expiry processing by using a more precise matching approach.
+     * This prevents duplicate expiry processing by checking for existing expiry transactions
+     * that are linked to this reward via source_reward_id.
      * 
      * @param userId The user ID
      * @param rewardTransaction The reward transaction to check
@@ -222,23 +208,20 @@ public class ExpiryManagementService {
      */
     private boolean hasBeenProcessedForExpiry(String userId, Transaction rewardTransaction) {
         try {
-            // Look for expiry transactions that match this specific reward
-            List<Transaction> expiryTransactions = transactionRepository
-                    .findByUserIdAndTransactionType(userId, TransactionType.EXPIRY);
+            // Look for expiry transactions that are directly linked to this reward via source_reward_id
+            List<Transaction> linkedExpiryTransactions = transactionRepository
+                    .findConsumptionTransactionsByReward(rewardTransaction.getTransactionId());
             
-            // Check if there's an expiry transaction that corresponds to this reward
-            return expiryTransactions.stream()
-                    .anyMatch(expiry -> {
-                        // Match by number of coins and timing
-                        boolean coinsMatch = expiry.getNumberOfCoins().equals(rewardTransaction.getNumberOfCoins());
-                        boolean createdAfterReward = expiry.getCreatedAt().isAfter(rewardTransaction.getCreatedAt());
-                        boolean createdAfterExpiry = expiry.getCreatedAt().isAfter(rewardTransaction.getExpiresAt().minusSeconds(30));
-                        
-                        // Additional check: ensure the expiry was created within a reasonable time window
-                        boolean withinReasonableTime = expiry.getCreatedAt().isBefore(rewardTransaction.getExpiresAt().plusHours(1));
-                        
-                        return coinsMatch && createdAfterReward && createdAfterExpiry && withinReasonableTime;
-                    });
+            // Check if there are any EXPIRY transactions linked to this reward
+            boolean hasExpiryTransaction = linkedExpiryTransactions.stream()
+                    .anyMatch(tx -> tx.getTransactionType() == TransactionType.EXPIRY);
+            
+            if (hasExpiryTransaction) {
+                log.debug("Reward {} already has expiry transactions linked to it", rewardTransaction.getTransactionId());
+                return true;
+            }
+            
+            return false;
         } catch (Exception e) {
             log.warn("Error checking if reward has been processed for expiry: {}", e.getMessage());
             return false; // If we can't determine, allow processing to be safe
@@ -277,51 +260,83 @@ public class ExpiryManagementService {
     
     /**
      * Processes all expired reward transactions (used by cleanup job).
-     * This method replaces the call to RewardManagementService to avoid circular dependency.
+     * Now uses the same FIFO logic as real-time processing to ensure consistency.
      * 
      * @return Number of expired transactions processed
      */
     private int processAllExpiredRewards() {
-        log.info("Starting expired rewards processing");
+        log.info("Starting cleanup expired rewards processing");
         
         try {
             List<Transaction> expiredRewards = transactionRepository
                     .findExpiredRewardTransactions(LocalDateTime.now());
             
+            if (expiredRewards.isEmpty()) {
+                log.info("No expired rewards found during cleanup");
+                return 0;
+            }
+            
+            log.info("Found {} expired rewards during cleanup", expiredRewards.size());
+            
             int processedCount = 0;
             
-            for (Transaction expiredReward : expiredRewards) {
+            // Group by user to process efficiently
+            Map<String, List<Transaction>> expiredByUser = expiredRewards.stream()
+                    .collect(Collectors.groupingBy(t -> t.getUser().getUserId()));
+            
+            for (Map.Entry<String, List<Transaction>> entry : expiredByUser.entrySet()) {
+                String userId = entry.getKey();
+                List<Transaction> userExpiredRewards = entry.getValue();
+                
                 try {
-                    // Create expiry transaction
-                    Transaction expiryTransaction = Transaction.createExpiryTransaction(
-                            expiredReward.getUser(), expiredReward.getNumberOfCoins());
+                    User user = userRepository.findByUserId(userId)
+                            .orElseThrow(() -> new UserNotFoundException(userId));
                     
-                    // Save expiry transaction
-                    transactionRepository.save(expiryTransaction);
-                    
-                    // Get fresh user instance to avoid lazy loading issues  
-                    User user = userRepository.findByUserId(expiredReward.getUser().getUserId())
-                            .orElseThrow(() -> new UserNotFoundException(expiredReward.getUser().getUserId()));
-                    
-                    // Note: We don't update user.coins anymore since balance is calculated from transactions
-                    
-                    processedCount++;
-                    
-                    log.info("Processed expiry for user {}: {} coins", 
-                            user.getUserId(), expiredReward.getNumberOfCoins());
+                    for (Transaction expiredReward : userExpiredRewards) {
+                        try {
+                            // Calculate remaining coins for this specific reward
+                            Integer remainingCoins = transactionRepository
+                                    .calculateRemainingCoins(expiredReward.getTransactionId(), expiredReward.getNumberOfCoins());
                             
+                            if (remainingCoins == null) {
+                                remainingCoins = expiredReward.getNumberOfCoins();
+                            }
+                            
+                            if (remainingCoins > 0) {
+                                // Use FIFO service to expire the remaining coins from this specific reward
+                                Transaction expiryTransaction = fifoCoinsService.expireCoinsFromReward(
+                                        user, expiredReward, remainingCoins);
+                                
+                                processedCount++;
+                                
+                                log.info("Cleanup processed expiry for user {}: {} remaining coins from reward {} (original: {})", 
+                                        userId, remainingCoins, expiredReward.getTransactionId(), expiredReward.getNumberOfCoins());
+                            } else {
+                                log.debug("Reward {} for user {} already fully consumed during cleanup, skipping expiry", 
+                                        expiredReward.getTransactionId(), userId);
+                            }
+                        } catch (Exception e) {
+                            log.error("Failed to process expiry during cleanup for transaction {}: {}", 
+                                    expiredReward.getTransactionId(), e.getMessage(), e);
+                        }
+                    }
+                    
+                    // Save user after processing all their expired rewards
+                    if (!userExpiredRewards.isEmpty()) {
+                        userRepository.save(user);
+                    }
+                    
                 } catch (Exception e) {
-                    log.error("Failed to process expiry for transaction {}: {}", 
-                            expiredReward.getTransactionId(), e.getMessage(), e);
+                    log.error("Failed to process expired rewards for user {} during cleanup: {}", userId, e.getMessage(), e);
                 }
             }
             
-            log.info("Completed expired rewards processing. Processed {} transactions", processedCount);
+            log.info("Completed cleanup expired rewards processing. Processed {} transactions", processedCount);
             return processedCount;
             
         } catch (Exception e) {
-            log.error("Failed to process expired rewards: {}", e.getMessage(), e);
-            throw new RewardManagementException("Failed to process expired rewards: " + e.getMessage(), e);
+            log.error("Failed to process expired rewards during cleanup: {}", e.getMessage(), e);
+            throw new RewardManagementException("Failed to process expired rewards during cleanup: " + e.getMessage(), e);
         }
     }
     
